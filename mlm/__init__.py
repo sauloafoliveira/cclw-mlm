@@ -79,8 +79,6 @@ class MinimalLearningMachine(BaseEstimator, RegressorMixin):
 
         assert (len(self.M) != 0), "No reference point was yielded by the selector"
 
-        print(X.shape, y.shape)
-
         Dx = cdist(X, self.M)
         Dy = cdist(y, self.t)
 
@@ -160,9 +158,8 @@ def random_selector(X, y, factor=0.5):
 
 class RandomMinimalLearningMachine(MinimalLearningMachineClassifier):
 
-    def __init__(self, selector=None, selector_params=None):
-        self.selector = random_selector if selector == None else selector
-        self.selector_params = selector_params
+    def __init__(self, factor=0.5):
+        self.factor = factor
         MinimalLearningMachineClassifier.__init__(self)
 
 
@@ -171,7 +168,7 @@ class RandomMinimalLearningMachine(MinimalLearningMachineClassifier):
 
         y = self.lb.fit_transform(y)
         
-        self.M, self.t = self.selector(X, y)
+        self.M, self.t = random_selector(X, y, self.factor)
 
         assert (len(self.M) != 0), "No reference point was yielded by the selector"
 
@@ -351,25 +348,24 @@ class ClassCornerLightWeightedMinimalLearningMachineClassifier(LightWeightedMini
 
     def fit(self, X, y=None):
     
-        _, corners_idx = class_corner_selection(X, self.lb.fit_transform(y), return_indexes=True)
+        candidates, corners_idx = class_corner_selection(X, self.lb.fit_transform(y), return_indexes=True)
         
         def _internal_p(_X, y):
-            if sum(corners_idx) == 0:
+            if sum(candidates) == 0:
                 return np.eye(len(X))
 
-            kdtree = KDTree(X[corners_idx])
+            kdtree = KDTree(X[candidates])
 
             dist, _ = kdtree.query(_X, k=1)
 
             P = np.eye(len(_X))
             diag_values = np.max(dist) - np.asarray(dist)# ** 2
-            print(len(X), len(_X), len(X[corners_idx]))
+            
             np.fill_diagonal(P, diag_values)
             return P
             
         self.P = _internal_p
 
-        #import pdb; pdb.set_trace()
 
         LightWeightedMinimalLearningMachineClassifier.fit(self, X, y)
 
