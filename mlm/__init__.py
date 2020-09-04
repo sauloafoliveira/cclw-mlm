@@ -140,6 +140,7 @@ class MinimalLearningMachineClassifier(MinimalLearningMachine, ClassifierMixin):
         except AttributeError:
             raise RuntimeError("You must train the model prior predicting data!")
 
+        
         Dy = cdist(X, self.M) @ self.B_
 
         return predict_class(self.lb, self.t, Dy)
@@ -348,7 +349,7 @@ class ClassCornerLightWeightedMinimalLearningMachineClassifier(LightWeightedMini
 
     def fit(self, X, y=None):
     
-        candidates, corners_idx = class_corner_selection(X, self.lb.fit_transform(y), return_indexes=True)
+        candidates, _ = class_corner_selection(X, self.lb.fit_transform(y), return_indexes=True)
         
         def _internal_p(_X, y):
             if sum(candidates) == 0:
