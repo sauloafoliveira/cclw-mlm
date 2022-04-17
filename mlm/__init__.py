@@ -1,3 +1,4 @@
+from typing import overload
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.utils import Bunch
 from scipy.optimize import root
@@ -10,13 +11,14 @@ from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import  KDTree
 
 
+
 __all__ = ['MinimalLearningMachine',
            'MinimalLearningMachineClassifier']
 
 __author__  = "Saulo Oliveira <saulo.freitas.oliveira@gmail.com>"
 __status__  = "production"
 __version__ = "1.2.0"
-__date__    = "07 July 2020"
+__date__    = "17 April 2022"
 
 
 def prepare_data(X, y, lb=None):
@@ -49,42 +51,67 @@ def multilateration(Dy, t):
 
     return np.asarray([_.x for _ in result])
 
-def predict_class(lb, t, Dy):
 
-    # class as arrays
-    C = lb.transform(lb.classes_)
+def fast_mlat_nn(lb, t, Dy):
 
-    # projection on t
+    cost_fn = J(t)
 
-    dyhat = cdist(C, t)
+    # classes as arrays
+    one_hot_classes = lb.transform(lb.classes_)
 
-    costs = cdist(dyhat, Dy)
+    costs = cost_fn(one_hot_classes, Dy)
 
-    result = C[np.argmin(costs, axis=0)]
+    minimun_costs_idx = np.argmin(costs, axis=0)
+
+    result = one_hot_classes[minimun_costs_idx]
 
     return lb.inverse_transform(result)
 
+
+
+
+'''
+SOUZA JUNIOR, Amauri Holanda et al. 
+Minimal learning machine: a novel supervised distance-based approach for regression and classification. 
+Neurocomputing, v. 164, p. 34-44, 2015.
+https://doi.org/10.1016/j.neucom.2014.11.073
+'''
 class MinimalLearningMachine(BaseEstimator, RegressorMixin):
 
-    def __init__(self, estimator_type='regressor', l=0):
-        self.M, self.t = list(), list()
+    def __init__(self, estimator_type='regressor'):
+        self.M, self.t = None, None  # reference points
         self._sparsity_scores = (0, np.inf) # sparsity and norm frobenius
         self._estimator_type = estimator_type
-        self.l = l
+
+
+    def _set_reference_points(self, X, y):
+        self.M = X
+        self.t = y
+
+    def _compute_dx_dy(self, X, y):
+        assert (len(self.M) != 0), "No reference point was yielded by the selector"
+
+        self.Dx = cdist(X, self.M)
+        self.Dy = cdist(y, self.t)
+        return self     
+
+    def _estimate_b(self):
+        self.B_ = np.linalg.inv(self.Dx) @ self.Dy
+        self.Dx, self.Dy = None, None
+        return self
 
     def fit(self, X, y):
         X, y = prepare_data(X, y)
+
+        self._set_reference_points(X, y)
+
+        self._compute_dx_dy()
+
+        self._estimate_b()
         
-        self.M, self.t = X, y
-
-        assert (len(self.M) != 0), "No reference point was yielded by the selector"
-
-        Dx = cdist(X, self.M)
-        Dy = cdist(y, self.t)
-
-        self.B_ = np.linalg.inv(Dx) @ Dy
-
         self._sparsity_scores = (1 - len(self.M) / len(X), norm(self.B_, ord='fro'))
+
+        self.Dx, self.Dy = None, None # release memory
 
         return self
 
@@ -106,31 +133,25 @@ class MinimalLearningMachine(BaseEstimator, RegressorMixin):
 
         s = np.round(self._sparsity_scores, 2)
 
-        return s[0], s[1]
+        return (s[0], s[1])
 
+'''
+SOUZA JUNIOR, Amauri Holanda et al. 
+Minimal learning machine: a novel supervised distance-based approach for regression and classification. 
+Neurocomputing, v. 164, p. 34-44, 2015.
+https://doi.org/10.1016/j.neucom.2014.11.073
+'''
 class MinimalLearningMachineClassifier(MinimalLearningMachine, ClassifierMixin):
 
     def __init__(self):
-        MinimalLearningMachine.__init__(self, estimator_type='classifier')
+        super().__init__(self, estimator_type='classifier')
         self.lb = LabelBinarizer()
+
 
     def fit(self, X, y=None):
         X, y = prepare_data(X, y)
-
-        y = self.lb.fit_transform(y)
-        
-        self.M, self.t = X, y
-
-        assert (len(self.M) != 0), "No reference point was yielded by the selector"
-
-        dx = cdist(X, self.M)
-        dy = cdist(y, self.t)
-
-        self.B_ = np.linalg.pinv(dx) @ dy
-
-        self._sparsity_scores = (1 - len(self.M) / len(X), norm(self.B_, ord='fro'))
-
-        return self
+        # y must be one-hot-encoding
+        return super().fit(X, self.lb.fit_transform(y))
 
 
     def predict(self, X, y=None):
@@ -143,12 +164,12 @@ class MinimalLearningMachineClassifier(MinimalLearningMachine, ClassifierMixin):
         
         Dy = cdist(X, self.M) @ self.B_
 
-        return predict_class(self.lb, self.t, Dy)
+        return fast_mlat_nn(self.lb, self.t, Dy)
 
     def score(self, X, y, sample_weight=None):
         return ClassifierMixin.score(self, X, y, sample_weight)
 
-def random_selector(X, y, factor=0.5):
+def random_selection(X, y, factor=0.5):
 
     n = len(X)
     k = round(n * factor)
@@ -157,60 +178,49 @@ def random_selector(X, y, factor=0.5):
 
     return X[idx], y[idx]
 
-class RandomMinimalLearningMachine(MinimalLearningMachineClassifier):
+'''
+SOUZA JUNIOR, Amauri Holanda et al. 
+Minimal learning machine: a novel supervised distance-based approach for regression and classification. 
+Neurocomputing, v. 164, p. 34-44, 2015.
+https://doi.org/10.1016/j.neucom.2014.11.073
+'''
+class RandomMLMClassifier(MinimalLearningMachineClassifier):
 
     def __init__(self, factor=0.5):
         self.factor = factor
-        MinimalLearningMachineClassifier.__init__(self)
+        super().__init__(self)
 
-
-    def fit(self, X, y):
-        X, y = prepare_data(X, y)
-
-        y = self.lb.fit_transform(y)
-        
-        self.M, self.t = random_selector(X, y, self.factor)
-
-        assert (len(self.M) != 0), "No reference point was yielded by the selector"
-
-        Dx = cdist(X, self.M)
-        Dy = cdist(y, self.t)
-
-        self.B_ = np.linalg.pinv(Dx) @ Dy
-
-        self._sparsity_scores = (1 - len(self.M) / len(X), norm(self.B_, ord='fro'))
-
+    def _set_reference_points(self, X, y):
+        self.M, self.t = random_selection(X, y, self.factor)
         return self
 
-class RankMinimalLearningMachineClassifier(MinimalLearningMachineClassifier):
+    def _estimate_b(self):
+        self.B_ = np.linalg.pinv(self.Dx) @ self.Dy
+        return self
 
-    def __init__(self, C=0):
-        self.C = C
-        MinimalLearningMachineClassifier.__init__(self)
+'''
+ALENCAR, Alisson SC et al. 
+Mlm-rank: A ranking algorithm based on the minimal learning machine. 
+In: 2015 Brazilian Conference on Intelligent Systems (BRACIS). IEEE, 2015. p. 305-309.
+https://doi.org/10.1109/BRACIS.2015.39
+'''
+class RankMLMClassifier(MinimalLearningMachineClassifier):
 
-    def fit(self, X, y):
-        X, y = prepare_data(X, y)
+    def __init__(self, c=0):
+        self.c = 1e-5 if c == 0 else c
+        super().__init__(self)
 
-        y = self.lb.fit_transform(y)
+    def _estimate_b(self):
+        n = self.Dx.shape[0]
+        cI = np.eye(n) * self.c
 
-        self.M, self.t = X, y
+        inv_Dx = np.linalg.inv(self.Dx.T @ self.Dx + cI)
+        self.B_ = inv_Dx @ self.Dx.T @ self.Dy
         
-        assert (len(self.M) != 0), "No reference point was yielded by the selector"
-
-        Dx = cdist(X, self.M)
-        Dy = cdist(y, self.t)
-
-        I = np.eye(len(X))
-
-        self.B_ = np.linalg.inv(Dx.T @ Dx + self.C * I) @ Dx.T @ Dy
-
-        self._sparsity_scores = (1 - len(self.M) / len(X), norm(self.B_, ord='fro'))
-
         return self
 
 
 # regressors for the state-of-the-mlm-art
-
 def cardano(t, Dy):
     A = len(t)
     B = -3 * np.sum(t)
@@ -220,22 +230,29 @@ def cardano(t, Dy):
     return zip(A * np.ones((A, 1)), B * np.ones((A, 1)), C, D)
 
 def root_analysis(roots, t, dy):
-    real_roots = list(map(np.isreal, roots))
-
+    real_roots = np.isreal(roots, dtype=complex)
     cost_function = J(t)
 
     if np.sum(real_roots) == 3:
         # Rescue the root with the lowest cost associated
-        j = [norm(cost_function(root, dy)) for root in np.real(roots)]
+        costs = [norm(cost_function(_root, dy)) for _root in real_roots]
 
-        idx = np.argmin(j)
-        return np.real(roots[idx])
+        idx = np.argmin(costs)
+
+        return real_roots[idx]
 
     else:
         # As True > False, then rescue the first real value
-        return np.real(roots[np.argmax(real_roots)])
+        idx = np.argmax(real_roots)
+        return real_roots[idx]
 
-class CubicEquationMinimalLearningMachine(MinimalLearningMachine):
+'''
+MESQUITA, Diego PP; GOMES, Joao PP; SOUZA JUNIOR, Amauri H. 
+Ensemble of efficient minimal learning machines for classification and regression. 
+Neural Processing Letters, v. 46, n. 3, p. 751-766, 2017.
+https://doi.org/10.1007/s11063-017-9587-5
+'''
+class CubicEquationMLM(MinimalLearningMachine):
 
     def predict(self, X, y=None):
         try:
@@ -245,42 +262,38 @@ class CubicEquationMinimalLearningMachine(MinimalLearningMachine):
 
         Dy = cdist(X, self.M) @ self.B_
 
-        return [np.roots(*params) for params in cardano(self.t, Dy)]
+        return [root_analysis(*params) for params in cardano(self.t, Dy)]
 
-def class_corner_selection(X, y, radius=None, k_neighbors=16, threshold=9, return_indexes=False):
 
-    kdtree = KDTree(X)
+'''
+FLORENCIO, Jose AV et al. 
+A new perspective for minimal learning machines: A lightweight approach. 
+Neurocomputing, v. 401, p. 308-319, 2020.
+https://doi.org/10.1016/j.neucom.2020.03.088
+'''
+class LightWeightedMLM(CubicEquationMLM):
 
-    if radius == None:
-        dist, _ = kdtree.query(X, k=2)
-        radius = np.max(dist, axis=None)
+    def __init__(self, estimator_type='regressor'):
+        super().__init__(estimator_type)
 
-    dist, ind = kdtree.query(X, k=k_neighbors + 1)
-
-    #import pdb; pdb.set_trace()
+    def _compute_p(self, X, y): # random
+        P = np.eye(len(X))
+        diag_values = np.random.normal(size=(1, len(X)))
+        np.fill_diagonal(P, diag_values)
+        return P
     
-    L = lambda d, i, lab: np.sum( \
-        np.logical_and(flat(d <= radius), \
-                        flat(cdist(y[i], lab) > 0)).astype(int))
+    def _estimate_b(self):
+
+        Dx, Dy = self.Dx, self.Dy
         
-    costs = [L(d, i, lab.reshape(1, -1)) for d, i, lab in zip(dist, ind, y)]
-    costs = np.asarray(costs)
+        P = self._compute_p()
 
-    
+        inv_Dx_P = Dx.T @ Dx + P.T @ P
 
-    # the query point is also into the cost list, 
-    # thus we add 1 to the threshold
+        self.B_ = np.linalg.inv(inv_Dx_P) @ Dx.T @ Dy
 
-    proto_idx, corner_idx = costs > 1, costs > threshold + 1
+        return self
 
-    if return_indexes:
-        return proto_idx, corner_idx
-
-    
-    Prototypes = X[proto_idx], y[proto_idx]
-    Corners = X[corner_idx], y[corner_idx]
-
-    return Prototypes, Corners
 
 
 def ks2_sample_p(X, y, k=None, t=None, l=1):
@@ -310,64 +323,135 @@ def ks2_sample_p(X, y, k=None, t=None, l=1):
 
     return P
 
-def random_p(X, y):
-    P = np.eye(len(X))
-    diag_values = np.random.normal(size=(1, len(X)))
-    np.fill_diagonal(P, diag_values)
-    return P
+'''
+FLORENCIO, Jose AV et al. 
+A new perspective for minimal learning machines: A lightweight approach. 
+Neurocomputing, v. 401, p. 308-319, 2020.
+https://doi.org/10.1016/j.neucom.2020.03.088
+'''
+class K2S_LWMLM(LightWeightedMLM):
 
-class LightWeightedMinimalLearningMachineClassifier(MinimalLearningMachineClassifier):
+    def __init__(self, k_neighbors=None, threshold=None, l=1):
+        super().__init__()
+        self.k = k_neighbors
+        self.threshold = threshold
+        self.l = l
 
-    def __init__(self, P=random_p):
-        MinimalLearningMachineClassifier.__init__(self)
-        self.P = random_p if P == None else P
+    def _compute_p(self, X, y):
+        return ks2_sample_p(X, y, self.k_neighbors, self.threshold, self.l)
 
-    def fit(self, X, y=None):
-        X, y = check_X_y(X, y, multi_output=True, y_numeric=True)
 
-        y = self.lb.fit_transform(y)
+def class_corner_selection(X, y, radius=None, k_neighbors=16, threshold=9, return_indexes=False, return_costs=False):
+
+    kdtree = KDTree(X)
+
+    if threshold >= k_neighbors:
+        raise RuntimeError("You must have a threshold < k_neighbors!")
+
+    if radius == None: # fast setup
+        dist, _ = kdtree.query(X, k=2)
+        radius = np.max(dist, axis=None)
+
+    dist, ind = kdtree.query(X, k=k_neighbors + 1)
+   
+    L = lambda d, i, lab: np.sum( \
+        np.logical_and(flat(d <= radius), \
+                        flat(cdist(y[i], lab) > 0)).astype(int))
         
-        self.M, self.t = X, y
+    costs = [L(d, i, lab.reshape(1, -1)) for d, i, lab in zip(dist, ind, y)]
+    costs = np.asarray(costs)
 
-        assert (len(self.M) != 0), "No reference point was yielded by the selector"
+    # the query point is also into the cost list, 
+    # thus we add 1 to the threshold
 
-        
-        Dx = cdist(X, self.M)
-        Dy = cdist(y, self.t)
+    proto_idx, corner_idx = costs > 1, costs > threshold + 1
 
-        P = self.P(X, y) 
+    if return_indexes:
+        if return_costs:
+            return proto_idx, corner_idx, costs
 
-        self.B_ = np.linalg.inv(Dx.T @ Dx + P.T @ P) @ Dx.T @ Dy
-
-        return self
+        return proto_idx, corner_idx
 
     
-class ClassCornerLightWeightedMinimalLearningMachineClassifier(LightWeightedMinimalLearningMachineClassifier):
+    Prototypes = X[proto_idx], y[proto_idx]
+    Corners = X[corner_idx], y[corner_idx]
 
-    def __init__(self, selector=None):
-        LightWeightedMinimalLearningMachineClassifier.__init__(self)
+    if return_costs:
+        Prototypes, Corners, costs
+    return Prototypes, Corners
+
+
+class LightWeightedMLMClassifier(LightWeightedMLM, MinimalLearningMachineClassifier):
+
+    def __init__(self):
+        super().__init__(self)
 
     def fit(self, X, y=None):
-    
+        X, y = prepare_data(X, y)
+        # y must be one-hot-encoding
+        return LightWeightedMLM.fit(self, X, self.lb.fit_transform(y))
+
+
+    def predict(self, X, y=None):
+        return MinimalLearningMachineClassifier.predict(self, X, y)
+
+
+def ncd(X, Ps):
+    kdtree = KDTree(Ps)
+    nx, _ = kdtree.query(X, k=1)
+    return np.max(nx) - nx
+
+
+'''
+Dealing with Heteroscedasticity in Minimal Learning Machine Framework
+
+'''
+class ClassCornerLWMLMClassifier(LightWeightedMLMClassifier):
+
+    def __init__(self, radius=None, k_neighbors=16, threshold=9):
+        super().__init__(self)
+
+        self.radius = radius
+        self.k_neighbors = k_neighbors
+        self.threshold = threshold
+
+    def _compute_p(self, X, y):
         candidates, _ = class_corner_selection(X, self.lb.fit_transform(y), return_indexes=True)
         
-        def _internal_p(_X, y):
-            if sum(candidates) == 0:
-                return np.eye(len(X))
+        P = np.eye(len(X))
 
-            kdtree = KDTree(X[candidates])
-
-            dist, _ = kdtree.query(_X, k=1)
-
-            P = np.eye(len(_X))
-            diag_values = np.max(dist) - np.asarray(dist)# ** 2
-            
-            np.fill_diagonal(P, diag_values)
-            return P
-            
-        self.P = _internal_p
+        if np.any(candidates):
+            Ps = X[candidates]
+            np.fill_diagonal(P, ncd(X, Ps))
+        return P
 
 
-        LightWeightedMinimalLearningMachineClassifier.fit(self, X, y)
+'''
+GOMES, Joao Paulo P., SOUZA, Amauri H., CORONA, Francesco, et al. 
+A cost sensitive minimal learning machine for pattern classification. 
+In : International Conference on Neural Information Processing. 
+Springer, Cham, 2015. p. 557-564.
+https://10.1007/978-3-319-26532-2_61
+'''
+class wMLM(MinimalLearningMachineClassifier):
 
-        self._sparsity_scores = (1 - len(self.M) / len(X), norm(self.B_, ord='fro'))
+    def __init__(self):
+        super().__init__()
+
+    def _compute_w(self, X, y):
+        cf = 1 / np.bincount(y) # inverse of class frequence
+
+        w = np.zeros(y.shape)
+
+        for i, u in enumerate(np.unique(y)):
+            w += np.where(u == y, cf[i], 0)
+
+        return np.diag(w)
+
+    def _estimate_b(self):
+        W = self._compute_w()
+
+        inv_Dx = self.Dx.T @ W @ self.Dx
+        self.B_ = inv_Dx @ W @ self.Dy
+
+        return self
