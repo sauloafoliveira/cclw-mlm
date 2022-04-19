@@ -1,4 +1,3 @@
-from typing import overload
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.utils import Bunch
 from scipy.optimize import root
@@ -23,23 +22,14 @@ __date__    = "17 April 2022"
 
 def prepare_data(X, y, lb=None):
     X, y = check_X_y(X, y, multi_output=True, y_numeric=True)
-
-    y = np.ravel(y).reshape(len(y), -1)
-
-    if lb != None:
-        y = lb.fit_transform(y)
-
     return X, y
-
-def flat(x):
-    return np.ravel(x).reshape(1, -1).T
 
 def randperm(n, k):
     permutation = np.random.permutation(n)
     return permutation[:k]
 
 def J(t):
-    return lambda y, dy: norm(cdist(y, t) - dy)
+    return lambda y, dy: norm(cdist(np.atleast_2d(y), np.atleast_2d(t)) - np.atleast_2d(dy))
 
 def multilateration(Dy, t):
 
@@ -47,27 +37,11 @@ def multilateration(Dy, t):
 
     _cost_function = J(t)
 
-    result = [root(method='lm', fun=lambda y: _cost_function(y, dy), x0=y0) for dy in Dy]
+    result = [root(method='lm', \
+        fun=lambda y: _cost_function(y, dy), x0=y0) \
+            for dy in Dy]
 
     return np.asarray([_.x for _ in result])
-
-
-def fast_mlat_nn(lb, t, Dy):
-
-    cost_fn = J(t)
-
-    # classes as arrays
-    one_hot_classes = lb.transform(lb.classes_)
-
-    costs = cost_fn(one_hot_classes, Dy)
-
-    minimun_costs_idx = np.argmin(costs, axis=0)
-
-    result = one_hot_classes[minimun_costs_idx]
-
-    return lb.inverse_transform(result)
-
-
 
 
 '''
@@ -82,17 +56,19 @@ class MinimalLearningMachine(BaseEstimator, RegressorMixin):
         self.M, self.t = None, None  # reference points
         self._sparsity_scores = (0, np.inf) # sparsity and norm frobenius
         self._estimator_type = estimator_type
-
-
+        
     def _set_reference_points(self, X, y):
+        
         self.M = X
-        self.t = y
+        self.t = y if len(np.shape(y)) == 2 else np.reshape(y, (len(y), -1))
 
     def _compute_dx_dy(self, X, y):
         assert (len(self.M) != 0), "No reference point was yielded by the selector"
 
+        yy = y if len(np.shape(y)) == 2 else np.reshape(y, (len(y), -1))
+        
         self.Dx = cdist(X, self.M)
-        self.Dy = cdist(y, self.t)
+        self.Dy = cdist(yy, self.t)
         return self     
 
     def _estimate_b(self):
@@ -105,7 +81,7 @@ class MinimalLearningMachine(BaseEstimator, RegressorMixin):
 
         self._set_reference_points(X, y)
 
-        self._compute_dx_dy()
+        self._compute_dx_dy(X, y)
 
         self._estimate_b()
         
@@ -135,6 +111,22 @@ class MinimalLearningMachine(BaseEstimator, RegressorMixin):
 
         return (s[0], s[1])
 
+
+
+def fast_mlat_nn(lb, t, Dy):
+    # classes as one_hot
+    one_hot_classes = lb.transform(lb.classes_)
+
+    dy = cdist(one_hot_classes, t)
+
+    costs = cdist(Dy, dy)
+
+    minimun_costs_idx = np.argmin(costs, axis=1)
+    
+    actual_output = lb.classes_[minimun_costs_idx]
+
+    return actual_output    
+    
 '''
 SOUZA JUNIOR, Amauri Holanda et al. 
 Minimal learning machine: a novel supervised distance-based approach for regression and classification. 
@@ -143,19 +135,27 @@ https://doi.org/10.1016/j.neucom.2014.11.073
 '''
 class MinimalLearningMachineClassifier(MinimalLearningMachine, ClassifierMixin):
 
-    def __init__(self):
-        super().__init__(self, estimator_type='classifier')
+    def __init__(self, estimator_type='classifier'):
+        super().__init__(estimator_type=estimator_type)
         self.lb = LabelBinarizer()
-
 
     def fit(self, X, y=None):
         X, y = prepare_data(X, y)
         # y must be one-hot-encoding
-        return super().fit(X, self.lb.fit_transform(y))
 
+        one_hot_y = self.lb.fit_transform(y)
+
+        return super().fit(X, one_hot_y)
+
+    def _estimate_b(self):
+        self.B_ = np.linalg.pinv(self.Dx) @ self.Dy
+        self.Dx, self.Dy = None, None
+        return self
 
     def predict(self, X, y=None):
         
+        X = np.atleast_2d(X)
+
         try:
             getattr(self, "B_")
         except AttributeError:
@@ -187,8 +187,9 @@ https://doi.org/10.1016/j.neucom.2014.11.073
 class RandomMLMClassifier(MinimalLearningMachineClassifier):
 
     def __init__(self, factor=0.5):
+        super().__init__()
         self.factor = factor
-        super().__init__(self)
+
 
     def _set_reference_points(self, X, y):
         self.M, self.t = random_selection(X, y, self.factor)
@@ -207,8 +208,8 @@ https://doi.org/10.1109/BRACIS.2015.39
 class RankMLMClassifier(MinimalLearningMachineClassifier):
 
     def __init__(self, c=0):
+        super().__init__()
         self.c = 1e-5 if c == 0 else c
-        super().__init__(self)
 
     def _estimate_b(self):
         n = self.Dx.shape[0]
@@ -275,6 +276,7 @@ class LightWeightedMLM(CubicEquationMLM):
 
     def __init__(self, estimator_type='regressor'):
         super().__init__(estimator_type)
+        self.P = None
 
     def _compute_p(self, X, y): # random
         P = np.eye(len(X))
@@ -282,15 +284,19 @@ class LightWeightedMLM(CubicEquationMLM):
         np.fill_diagonal(P, diag_values)
         return P
     
+    def _set_reference_points(self, X, y):
+        super()._set_reference_points(X, y)
+        self.P = self._compute_p(X, y)
+    
     def _estimate_b(self):
 
-        Dx, Dy = self.Dx, self.Dy
+        Dx, Dy, P = self.Dx, self.Dy, self.P
         
-        P = self._compute_p()
-
         inv_Dx_P = Dx.T @ Dx + P.T @ P
 
         self.B_ = np.linalg.inv(inv_Dx_P) @ Dx.T @ Dy
+        
+        self.P = None
 
         return self
 
@@ -384,7 +390,7 @@ def class_corner_selection(X, y, radius=None, k_neighbors=16, threshold=9, retur
 class LightWeightedMLMClassifier(LightWeightedMLM, MinimalLearningMachineClassifier):
 
     def __init__(self):
-        super().__init__(self)
+        super().__init__(estimator_type='classifier')
 
     def fit(self, X, y=None):
         X, y = prepare_data(X, y)
