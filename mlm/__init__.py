@@ -383,7 +383,7 @@ def class_corner_selection(X, y, radius=None, k_neighbors=16, threshold=9, retur
     Corners = X[corner_idx], y[corner_idx]
 
     if return_costs:
-        Prototypes, Corners, costs
+        return Prototypes, Corners, costs
     return Prototypes, Corners
 
 
@@ -415,7 +415,7 @@ Dealing with Heteroscedasticity in Minimal Learning Machine Framework
 class ClassCornerLWMLMClassifier(LightWeightedMLMClassifier):
 
     def __init__(self, radius=None, k_neighbors=16, threshold=9):
-        super().__init__(self)
+        super().__init__()
 
         self.radius = radius
         self.k_neighbors = k_neighbors
